@@ -1,0 +1,18 @@
+name: "Sync p5 editor"
+description: "Sync p5.js sketch project to p5 web editor"
+inputs:
+  p5-username:
+    description: 'username to login to p5.js web editor'
+    required: true
+  p5-password:
+    description: 'password to login to p5.js web editor'
+    required: true
+  sketch-folder:
+    description: 'folder that holds all the p5.js sketch project'
+    default: 'sketches'
+  collection-name:
+    description: 'collection on p5.js web editor to hold the remote sketches'
+    default: 'My Sketches'
+runs:
+  using: "node20"
+  main: 'dist/index.js'

@@ -181,6 +181,37 @@ module.exports = {
 
 /***/ }),
 
+/***/ 4904:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+const fs = __nccwpck_require__(9896);
+const path = __nccwpck_require__(6928);
+
+function getSketches(folder) {
+  const entries = fs.readdirSync(folder);
+  const sketches = [];
+
+  for (const entry of entries) {
+    const fullPath = path.join(folder, entry);
+    const stats = fs.statSync(fullPath);
+
+    if (stats.isDirectory()) {
+      // Recursively check this directory
+      sketches.push(...getSketches(fullPath));
+    } else if (entry === 'index.html') {
+      sketches.push(folder); // Add the folder path if it contains index.html
+    }
+  }
+
+  return sketches;
+}
+
+module.exports = {
+  getSketches
+};
+
+/***/ }),
+
 /***/ 7524:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -40579,6 +40610,7 @@ const core = __nccwpck_require__(2386);
 (__nccwpck_require__(1223).config)();
 
 const apiService = __nccwpck_require__(4622);
+const { getSketches } = __nccwpck_require__(4904);
 
 const P5_USERNAME = core.getInput("p5-username") || process.env.P5_USERNAME;
 const P5_PASSWORD = core.getInput("p5-password") || process.env.P5_PASSWORD;
@@ -40586,7 +40618,7 @@ const SKETCHES_FOLDER = path.join(
   process.cwd(),
   core.getInput("sketch-folder") || process.env.SKETCHES_FOLDER || "sketches"
 );
-const SKETCH_INFO_FILE = path.join(process.cwd(), "sketches.json");
+const SKETCH_INFO_FILE = path.join(SKETCHES_FOLDER, "sketchesMap.json");
 const COLLECTION_NAME =
   core.getInput("collection-name") ||
   process.env.COLLECTION_NAME ||
@@ -40619,15 +40651,11 @@ const COLLECTION_NAME =
     : [];
 
   // Get the list of sketch directories
-  const sketches = fs
-    .readdirSync(SKETCHES_FOLDER)
-    .filter((file) =>
-      fs.statSync(path.join(SKETCHES_FOLDER, file)).isDirectory()
-    );
+  const sketches = getSketches(SKETCHES_FOLDER)
 
-  for (const sketchName of sketches) {
-    const sketchPath = path.join(SKETCHES_FOLDER, sketchName);
-
+  for (const sketchPath of sketches) {
+    const sketchName = path.basename(sketchPath);
+  
     // Read all files in the sketch folder
     const files = fs.readdirSync(sketchPath).filter((file) => {
       const fileExtension = path.extname(file).toLowerCase();

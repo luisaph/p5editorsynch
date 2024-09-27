@@ -5,6 +5,7 @@ const core = require("@actions/core");
 require("dotenv").config();
 
 const apiService = require("./lib/api");
+const { getSketches } = require("./lib/util");
 
 const P5_USERNAME = core.getInput("p5-username") || process.env.P5_USERNAME;
 const P5_PASSWORD = core.getInput("p5-password") || process.env.P5_PASSWORD;
@@ -12,7 +13,7 @@ const SKETCHES_FOLDER = path.join(
   process.cwd(),
   core.getInput("sketch-folder") || process.env.SKETCHES_FOLDER || "sketches"
 );
-const SKETCH_INFO_FILE = path.join(process.cwd(), "sketches.json");
+const SKETCH_INFO_FILE = path.join(SKETCHES_FOLDER, "sketchesMap.json");
 const COLLECTION_NAME =
   core.getInput("collection-name") ||
   process.env.COLLECTION_NAME ||
@@ -45,15 +46,11 @@ const COLLECTION_NAME =
     : [];
 
   // Get the list of sketch directories
-  const sketches = fs
-    .readdirSync(SKETCHES_FOLDER)
-    .filter((file) =>
-      fs.statSync(path.join(SKETCHES_FOLDER, file)).isDirectory()
-    );
+  const sketches = getSketches(SKETCHES_FOLDER)
 
-  for (const sketchName of sketches) {
-    const sketchPath = path.join(SKETCHES_FOLDER, sketchName);
-
+  for (const sketchPath of sketches) {
+    const sketchName = path.basename(sketchPath);
+  
     // Read all files in the sketch folder
     const files = fs.readdirSync(sketchPath).filter((file) => {
       const fileExtension = path.extname(file).toLowerCase();

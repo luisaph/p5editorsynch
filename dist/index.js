@@ -4,15 +4,20 @@
 /***/ 4622:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
-// api.js
+const fs = __nccwpck_require__(9896);
 const axios = __nccwpck_require__(9171);
 const { CookieJar } = __nccwpck_require__(1122);
 const { wrapper } = __nccwpck_require__(2897);
+const FormData = __nccwpck_require__(720);
+const path = __nccwpck_require__(6928);
 
 const BASE_URL = "https://editor.p5js.org";
 
 // Create a cookie jar to store session cookies
 const cookieJar = new CookieJar();
+
+// Temporarily store the userId
+let userId = null;
 
 // Wrap axios to support cookies
 const axiosInstance = wrapper(
@@ -39,6 +44,7 @@ async function login(username, password) {
     });
 
     if (response.status === 200) {
+      userId = response.data.id;
       console.log("Successfully logged in.");
     } else {
       console.error(
@@ -170,12 +176,103 @@ async function addSketchToCollection(collectionId, sketchId, sketchName) {
   }
 }
 
+/**
+ * Upload a file to S3 and add it to a sketch
+ * @param {string} filePath - The path to the local file
+ * @param {string} sketchId - The ID of the sketch to add the file to
+ * @param {string} parentId - The ID of the parent folder in the sketch
+ * @returns {object} Upload result with success status and file URL
+ */
+async function uploadFile(filePath, sketchId, parentId) {
+  try {
+    // Read the file
+    const fileStream = fs.createReadStream(filePath);
+    const fileStats = fs.statSync(filePath);
+    const fileName = path.basename(filePath);
+
+    // Get the file type
+    const fileType = getFileType(fileName);
+
+    // Get S3 signed URL
+    const signResponse = await axiosInstance.post("/editor/S3/sign", {
+      name: fileName,
+      type: fileType,
+      size: fileStats.size,
+      userId,
+    });
+
+    if (!signResponse.data || !signResponse.data.key) {
+      throw new Error("Failed to get signed URL from p5.js Web Editor");
+    }
+
+    const { key } = signResponse.data;
+
+    // Create form data for S3 upload
+    const formData = new FormData();
+    Object.entries(signResponse.data).forEach(([key, value]) => {
+      formData.append(key, value);
+    });
+    formData.append("file", fileStream);
+
+    // Upload to S3
+    const s3Response = await axios.post(
+      "https://assets.editor.p5js.org/",
+      formData
+    );
+
+    if (s3Response.status !== 201) {
+      throw new Error("Failed to upload file to S3");
+    }
+
+    const fileUrl = `https://assets.editor.p5js.org/${key}`;
+
+    return {
+      success: true,
+      key,
+      url: fileUrl,
+    };
+  } catch (error) {
+    console.error(
+      `Error uploading file "${filePath}"`,
+      error.response ? error.response.data : error.message
+    );
+    return {
+      success: false,
+      error: error.message,
+    };
+  }
+}
+
+/**
+ * Helper function to determine file type
+ * @param {string} fileName - The name of the file
+ * @returns {string} The MIME type of the file
+ */
+function getFileType(fileName) {
+  const extension = fileName.split(".").pop().toLowerCase();
+  const mimeTypes = {
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    png: "image/png",
+    gif: "image/gif",
+    svg: "image/svg+xml",
+    mp3: "audio/mpeg",
+    wav: "audio/wav",
+    mp4: "video/mp4",
+    webm: "video/webm",
+    pdf: "application/pdf",
+  };
+
+  return mimeTypes[extension] || "application/octet-stream";
+}
+
 module.exports = {
   login,
   getOrCreateCollection,
   createSketch,
   updateSketch,
   addSketchToCollection,
+  uploadFile,
 };
 
 
@@ -186,29 +283,113 @@ module.exports = {
 
 const fs = __nccwpck_require__(9896);
 const path = __nccwpck_require__(6928);
+const objectID = __nccwpck_require__(5123);
+
+const IGNORED_FILES = [".DS_Store", "Thumbs.db"];
+
+function findStaticFiles(dir, baseDir) {
+  const files = [];
+  const entries = fs.readdirSync(dir);
+
+  for (const entry of entries) {
+    // Skip ignored files
+    if (IGNORED_FILES.includes(entry)) {
+      continue;
+    }
+
+    const fullPath = path.join(dir, entry);
+    const stats = fs.statSync(fullPath);
+
+    if (stats.isDirectory()) {
+      // Recursively search subdirectories
+      files.push(...findStaticFiles(fullPath, baseDir));
+    } else {
+      const ext = path.extname(entry).toLowerCase();
+      // Filter for non-code files
+      if (
+        ![".html", ".css", ".js", ".json"].includes(ext) &&
+        entry !== "sketchesMap.json"
+      ) {
+        // Calculate relative path from sketch root
+        const relativePath = path.relative(baseDir, dir);
+        files.push({
+          name: entry,
+          path: fullPath,
+          folder: relativePath,
+        });
+      }
+    }
+  }
+
+  return files;
+}
 
 function getSketches(folder) {
   const entries = fs.readdirSync(folder);
   const sketches = [];
+  const staticFiles = new Map();
 
   for (const entry of entries) {
     const fullPath = path.join(folder, entry);
     const stats = fs.statSync(fullPath);
 
     if (stats.isDirectory()) {
-      // Recursively check this directory
-      sketches.push(...getSketches(fullPath));
-    } else if (entry === 'index.html') {
-      sketches.push(folder); // Add the folder path if it contains index.html
+      // Check if this directory is a sketch (contains index.html)
+      if (fs.existsSync(path.join(fullPath, "index.html"))) {
+        sketches.push(fullPath);
+        // Find all static files in the sketch directory and its subdirectories
+        const sketchFiles = findStaticFiles(fullPath, fullPath);
+        if (sketchFiles.length > 0) {
+          staticFiles.set(fullPath, sketchFiles);
+        }
+      } else {
+        // Recursively check subdirectories
+        const { sketches: subSketches, staticFiles: subStaticFiles } =
+          getSketches(fullPath);
+        sketches.push(...subSketches);
+        for (const [sketchPath, files] of subStaticFiles) {
+          staticFiles.set(sketchPath, files);
+        }
+      }
     }
   }
 
-  return sketches;
+  return { sketches, staticFiles };
+}
+
+async function createFolderStructure(folderPath, rootId, filesData) {
+  const folderNames = folderPath.split(path.sep).filter((name) => name !== "");
+  let currentParentId = rootId;
+
+  for (const folderName of folderNames) {
+    const folderId = objectID().toHexString();
+
+    filesData.push({
+      id: folderId,
+      _id: folderId,
+      name: folderName,
+      content: "",
+      fileType: "folder",
+      children: [],
+    });
+
+    // Add this folder as a child of its parent
+    const parentFolder = filesData.find((f) => f.id === currentParentId);
+    if (parentFolder) {
+      parentFolder.children.push(folderId);
+    }
+
+    currentParentId = folderId;
+  }
+
+  return currentParentId;
 }
 
 module.exports = {
-  getSketches
+  getSketches,
+  createFolderStructure,
 };
+
 
 /***/ }),
 
@@ -40612,130 +40793,348 @@ const core = __nccwpck_require__(2386);
 const apiService = __nccwpck_require__(4622);
 const { getSketches } = __nccwpck_require__(4904);
 
-const P5_USERNAME = core.getInput("p5-username") || process.env.P5_USERNAME;
-const P5_PASSWORD = core.getInput("p5-password") || process.env.P5_PASSWORD;
-const SKETCHES_FOLDER = path.join(
-  process.cwd(),
-  core.getInput("sketch-folder") || process.env.SKETCHES_FOLDER || "sketches"
-);
-const SKETCH_INFO_FILE = path.join(SKETCHES_FOLDER, "sketchesMap.json");
-const COLLECTION_NAME =
-  core.getInput("collection-name") ||
-  process.env.COLLECTION_NAME ||
-  "My Sketches";
+// Constants
+const TEXT_FILE_EXTENSIONS = [".html", ".css", ".js", ".json"];
+const DEFAULT_SELECTED_FILE = "sketch.js";
 
-(async () => {
-  if (!P5_USERNAME || !P5_PASSWORD) {
-    console.error(
-      "No username or password provided. Please set the P5_USERNAME and P5_PASSWORD environment variables."
+// Configuration
+const config = {
+  username: core.getInput("p5-username") || process.env.P5_USERNAME,
+  password: core.getInput("p5-password") || process.env.P5_PASSWORD,
+  sketchesFolder: path.join(
+    process.cwd(),
+    core.getInput("sketch-folder") || process.env.SKETCHES_FOLDER || "sketches"
+  ),
+  sketchInfoFile: __nccwpck_require__.ab + "p5editorsynch/" + core.getInput("sketch-folder") || process.env.SKETCHES_FOLDER || "sketches" + '/sketchesMap.json',
+  collectionName:
+    core.getInput("collection-name") ||
+    process.env.COLLECTION_NAME ||
+    "My Sketches",
+};
+
+// Error handling
+const handleError = (message, error) => {
+  console.error(message, error.response ? error.response.data : error.message);
+  process.exit(1);
+};
+
+// Input validation
+const validateConfig = (config) => {
+  if (!config.username || !config.password) {
+    handleError(
+      "Configuration Error",
+      new Error(
+        "No username or password provided. Please set the P5_USERNAME and P5_PASSWORD environment variables."
+      )
     );
-    process.exit(1);
   }
 
-  if (!fs.existsSync(SKETCHES_FOLDER)) {
-    console.error(
-      `The "${SKETCHES_FOLDER}" folder does not exist. Please check is "SKETCHES_FOLDER" set correctly.`
+  if (!fs.existsSync(config.sketchesFolder)) {
+    handleError(
+      "Configuration Error",
+      new Error(
+        `The "${config.sketchesFolder}" folder does not exist. Please check if "SKETCHES_FOLDER" is set correctly.`
+      )
     );
-    process.exit(1);
   }
+};
 
-  // Login
-  await apiService.login(P5_USERNAME, P5_PASSWORD);
+// File processing
+const processCodeFiles = (sketchPath) => {
+  const filesData = [];
+  const rootId = objectID().toHexString();
 
-  // Get or create the collection
-  const collectionId = await apiService.getOrCreateCollection(COLLECTION_NAME);
+  filesData.push({
+    id: rootId,
+    _id: rootId,
+    name: "root",
+    content: "",
+    fileType: "folder",
+    children: [],
+  });
 
-  // Load existing sketch information
-  const sketchesInfo = fs.existsSync(SKETCH_INFO_FILE)
-    ? JSON.parse(fs.readFileSync(SKETCH_INFO_FILE, "utf8"))
-    : [];
+  const codeFiles = fs.readdirSync(sketchPath).filter((file) => {
+    const fileExt = path.extname(file).toLowerCase();
+    return TEXT_FILE_EXTENSIONS.includes(fileExt);
+  });
 
-  // Get the list of sketch directories
-  const sketches = getSketches(SKETCHES_FOLDER)
+  for (const fileName of codeFiles) {
+    const filePath = path.join(sketchPath, fileName);
+    const content = fs.readFileSync(filePath, "utf8");
+    const fileId = objectID().toHexString();
 
-  for (const sketchPath of sketches) {
-    const sketchName = path.basename(sketchPath);
-  
-    // Read all files in the sketch folder
-    const files = fs.readdirSync(sketchPath).filter((file) => {
-      const fileExtension = path.extname(file).toLowerCase();
-      return (
-        fs.statSync(path.join(sketchPath, file)).isFile() &&
-        [".html", ".css", ".js", ".json"].includes(fileExtension)
-      );
+    filesData.push({
+      id: fileId,
+      _id: fileId,
+      name: fileName,
+      content: content,
+      fileType: "file",
+      isSelectedFile: fileName === DEFAULT_SELECTED_FILE,
+      children: [],
     });
 
-    // Build the files object for the API request
-    const filesData = [];
-    const children = [];
+    filesData[0].children.push(fileId);
+  }
 
-    files.forEach((fileName) => {
-      const filePath = path.join(sketchPath, fileName);
-      const content = fs.readFileSync(filePath, "utf8");
+  return { filesData, rootId };
+};
 
-      const id = objectID().toHexString();
-      children.push(id);
+// Static file handling
+const processStaticFiles = async (
+  sketchPath,
+  staticFiles,
+  filesData,
+  rootId,
+  existingSketch
+) => {
+  const sketchStaticFiles = staticFiles.get(sketchPath);
+  if (!sketchStaticFiles?.length) return filesData;
+
+  const folderMap = new Map();
+  folderMap.set("", rootId);
+
+  // Create folder structure
+  for (const staticFile of sketchStaticFiles) {
+    if (staticFile.folder) {
+      await createFolderStructure(staticFile.folder, folderMap, filesData);
+    }
+  }
+
+  // Process files
+  for (const staticFile of sketchStaticFiles) {
+    try {
+      // Check if the file exists in the filesystem
+      if (fs.existsSync(staticFile.path)) {
+        await processStaticFile(
+          staticFile,
+          folderMap,
+          filesData,
+          existingSketch
+        );
+      } else {
+        console.warn(
+          `Warning: Static file ${staticFile.path} not found in filesystem`
+        );
+        // Remove the file from existingSketch.staticFiles if it exists there
+        if (existingSketch?.staticFiles) {
+          existingSketch.staticFiles = existingSketch.staticFiles.filter(
+            (f) =>
+              !(f.name === staticFile.name && f.folder === staticFile.folder)
+          );
+        }
+      }
+    } catch (error) {
+      console.error(`Error handling static file ${staticFile.name}:`, error);
+    }
+  }
+
+  return filesData;
+};
+
+const createFolderStructure = async (folder, folderMap, filesData) => {
+  const folderParts = folder.split(path.sep);
+  let currentPath = "";
+
+  for (const part of folderParts) {
+    const parentPath = currentPath;
+    currentPath = currentPath ? path.join(currentPath, part) : part;
+
+    if (!folderMap.has(currentPath)) {
+      const folderId = objectID().toHexString();
+      folderMap.set(currentPath, folderId);
+
+      const parentId = folderMap.get(parentPath);
+      const parentFolder = filesData.find((f) => f.id === parentId);
 
       filesData.push({
-        id,
-        _id: id,
-        name: fileName,
-        content: content,
-        fileType: "file",
-        isSelectedFile: fileName === "sketch.js",
+        id: folderId,
+        _id: folderId,
+        name: part,
+        content: "",
+        fileType: "folder",
         children: [],
       });
-    });
 
-    const id = objectID().toHexString();
+      if (parentFolder) {
+        parentFolder.children.push(folderId);
+      }
+    }
+  }
+};
 
-    filesData.unshift({
-      id,
-      _id: id,
-      name: "root",
-      content: "",
-      fileType: "folder",
-      children,
-    });
+const processStaticFile = async (
+  staticFile,
+  folderMap,
+  filesData,
+  existingSketch
+) => {
+  const parentId = folderMap.get(staticFile.folder || "");
+  const existingFile = existingSketch?.staticFiles
+    ? findExistingStaticFile(existingSketch, staticFile.name, staticFile.folder)
+    : null;
 
-    const existingSketch = sketchesInfo.find(
-      (item) => item.name === sketchName
+  let fileUrl = existingFile?.url;
+
+  // Upload if URL is missing
+  if (!fileUrl) {
+    const uploadResult = await apiService.uploadFile(
+      staticFile.path,
+      existingSketch?.id,
+      parentId
     );
 
-    if (existingSketch) {
-      // Update the Sketch
-      await apiService.updateSketch(existingSketch.id, sketchName, filesData);
-    } else {
-      // Create the sketch
-      const sketch = await apiService.createSketch(sketchName, filesData);
-
-      sketchesInfo.push({
-        id: sketch.id,
-        name: sketchName,
-      });
-
-      if (sketch && sketch.id) {
-        // Add the sketch to the collection
-        await apiService.addSketchToCollection(
-          collectionId,
-          sketch.id,
-          sketchName
+    if (uploadResult?.success) {
+      fileUrl = uploadResult.url;
+      if (existingSketch) {
+        // Remove old entry if it exists
+        existingSketch.staticFiles = existingSketch.staticFiles.filter(
+          (f) => !(f.name === staticFile.name && f.folder === staticFile.folder)
         );
+        // Add new entry
+        existingSketch.staticFiles.push({
+          name: staticFile.name,
+          folder: staticFile.folder,
+          url: fileUrl,
+        });
       }
     }
   }
 
-  // Save updated sketch information to JSON file
+  const fileId = objectID().toHexString();
+  const parentFolder = filesData.find((f) => f.id === parentId);
+  if (parentFolder) {
+    parentFolder.children.push(fileId);
+    filesData.push({
+      id: fileId,
+      _id: fileId,
+      name: path.basename(staticFile.name),
+      content: "",
+      fileType: "file",
+      url: fileUrl,
+      children: [],
+    });
+  }
+};
+
+// Save sketch information
+const saveSketchInfo = async (sketchesInfo, filePath) => {
   try {
-    fs.writeFileSync(
-      SKETCH_INFO_FILE,
+    await fs.promises.writeFile(
+      filePath,
       JSON.stringify(sketchesInfo, null, 2),
       "utf8"
     );
   } catch (error) {
-    console.error("Error writing to file:", error);
+    handleError("Error writing to file:", error);
   }
-})();
+};
+
+// Main function
+const main = async () => {
+  try {
+    validateConfig(config);
+
+    await apiService.login(config.username, config.password);
+    const collectionId = await apiService.getOrCreateCollection(
+      config.collectionName
+    );
+
+    const sketchesInfo = fs.existsSync(config.sketchInfoFile)
+      ? JSON.parse(fs.readFileSync(config.sketchInfoFile, "utf8"))
+      : [];
+
+    // Initialize staticFiles array for existing sketches that don't have it
+    sketchesInfo.forEach((sketch) => {
+      if (!sketch.staticFiles) {
+        sketch.staticFiles = [];
+      }
+    });
+
+    const { sketches, staticFiles } = getSketches(config.sketchesFolder);
+
+    for (const sketchPath of sketches) {
+      const sketchName = path.basename(sketchPath);
+      const existingSketch = sketchesInfo.find(
+        (item) => item.name === sketchName
+      );
+
+      const { filesData, rootId } = processCodeFiles(sketchPath);
+      await processStaticFiles(
+        sketchPath,
+        staticFiles,
+        filesData,
+        rootId,
+        existingSketch
+      );
+
+      if (existingSketch) {
+        await apiService.updateSketch(existingSketch.id, sketchName, filesData);
+      } else {
+        const sketch = await apiService.createSketch(sketchName, filesData);
+        if (sketch?.id) {
+          const newSketchInfo = {
+            id: sketch.id,
+            name: sketchName,
+            staticFiles: [],
+          };
+
+          updateSketchStaticFiles(
+            newSketchInfo,
+            sketchPath,
+            staticFiles,
+            filesData
+          );
+          sketchesInfo.push(newSketchInfo);
+          await apiService.addSketchToCollection(
+            collectionId,
+            sketch.id,
+            sketchName
+          );
+        }
+      }
+
+      await saveSketchInfo(sketchesInfo, config.sketchInfoFile);
+    }
+  } catch (error) {
+    handleError("An error occurred:", error);
+  }
+};
+
+const updateSketchStaticFiles = (
+  sketchInfo,
+  sketchPath,
+  staticFiles,
+  filesData
+) => {
+  const sketchStaticFiles = staticFiles.get(sketchPath);
+  if (sketchStaticFiles) {
+    for (const staticFile of sketchStaticFiles) {
+      const fileEntry = filesData.find(
+        (f) =>
+          f.fileType === "file" &&
+          f.name === path.basename(staticFile.name) &&
+          f.url
+      );
+
+      if (fileEntry) {
+        sketchInfo.staticFiles.push({
+          name: staticFile.name,
+          folder: staticFile.folder,
+          url: fileEntry.url,
+        });
+      }
+    }
+  }
+};
+
+// Helper function
+const findExistingStaticFile = (sketch, fileName, folder) => {
+  return sketch.staticFiles?.find(
+    (f) => f.name === fileName && f.folder === folder
+  );
+};
+
+main();
 
 module.exports = __webpack_exports__;
 /******/ })()

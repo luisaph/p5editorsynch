@@ -40802,10 +40802,14 @@ const config = {
   username: core.getInput("p5-username") || process.env.P5_USERNAME,
   password: core.getInput("p5-password") || process.env.P5_PASSWORD,
   sketchesFolder: path.join(
-    process.cwd(),
+    process.env.GITHUB_WORKSPACE,
     core.getInput("sketch-folder") || process.env.SKETCHES_FOLDER || "sketches"
   ),
-  sketchInfoFile: __nccwpck_require__.ab + "p5editorsynch/" + core.getInput("sketch-folder") || process.env.SKETCHES_FOLDER || "sketches" + '/sketchesMap.json',
+  sketchInfoFile: path.join(
+    process.env.GITHUB_WORKSPACE,
+    core.getInput("sketch-folder") || process.env.SKETCHES_FOLDER || "sketches",
+    "sketchesMap.json"
+  ),
   collectionName:
     core.getInput("collection-name") ||
     process.env.COLLECTION_NAME ||

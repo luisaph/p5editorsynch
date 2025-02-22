@@ -253,10 +253,17 @@ const main = async () => {
     validateConfig(config);
 
     await apiService.login(config.username, config.password);
-    const collectionId = await apiService.getOrCreateCollection(
+    const collection = await apiService.getOrCreateCollection(
       config.collectionName
     );
 
+    // Get local sketches
+    const { sketches, staticFiles } = getSketches(config.sketchesFolder);
+    const localSketchNames = sketches.map((sketchPath) =>
+      path.basename(sketchPath)
+    );
+
+    // Load or initialize sketchesInfo
     const sketchesInfo = fs.existsSync(config.sketchInfoFile)
       ? JSON.parse(fs.readFileSync(config.sketchInfoFile, "utf8"))
       : [];
@@ -268,8 +275,24 @@ const main = async () => {
       }
     });
 
-    const { sketches, staticFiles } = getSketches(config.sketchesFolder);
+    // Remove sketches that aren't in local folder anymore
+    if (collection) {
+      for (const item of collection.items) {
+        if (!item.isDeleted && !localSketchNames.includes(item.project.name)) {
+          await apiService.removeSketchFromCollection(
+            collection.id,
+            item.project.id
+          );
+          // Also remove from sketchesInfo
+          const index = sketchesInfo.findIndex((s) => s.id === item.project.id);
+          if (index !== -1) {
+            sketchesInfo.splice(index, 1);
+          }
+        }
+      }
+    }
 
+    // Process each local sketch
     for (const sketchPath of sketches) {
       const sketchName = path.basename(sketchPath);
       const existingSketch = sketchesInfo.find(
@@ -304,7 +327,7 @@ const main = async () => {
           );
           sketchesInfo.push(newSketchInfo);
           await apiService.addSketchToCollection(
-            collectionId,
+            collection.id,
             sketch.id,
             sketchName
           );

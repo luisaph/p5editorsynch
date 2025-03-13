@@ -252,13 +252,27 @@ const main = async () => {
     if (collection) {
       for (const item of collection.items) {
         if (!item.isDeleted && !localSketchNames.includes(item.project.name)) {
+          // First remove from collection
           await apiService.removeSketchFromCollection(
             collection.id,
             item.project.id
           );
-          console.log(
-            `Removed sketch "${item.project.name}" from collection as it no longer exists locally`
+
+          // Then delete the sketch itself
+          const deleteResult = await apiService.deleteSketch(
+            item.project.id,
+            item.project.name
           );
+
+          if (deleteResult) {
+            console.log(
+              `Removed and deleted sketch "${item.project.name}" as it no longer exists locally`
+            );
+          } else {
+            console.log(
+              `Removed sketch "${item.project.name}" from collection, but failed to delete it from the server`
+            );
+          }
         }
       }
     }

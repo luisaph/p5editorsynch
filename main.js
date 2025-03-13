@@ -19,11 +19,6 @@ const config = {
     process.env.GITHUB_WORKSPACE,
     core.getInput("sketch-folder") || process.env.SKETCHES_FOLDER || "sketches"
   ),
-  sketchInfoFile: path.join(
-    process.env.GITHUB_WORKSPACE,
-    core.getInput("sketch-folder") || process.env.SKETCHES_FOLDER || "sketches",
-    "sketchesMap.json"
-  ),
   collectionName:
     core.getInput("collection-name") ||
     process.env.COLLECTION_NAME ||
@@ -133,7 +128,7 @@ const processStaticFiles = async (
         console.warn(
           `Warning: Static file ${staticFile.path} not found in filesystem`
         );
-        // Remove the file from existingSketch.staticFiles if it exists there
+        // If the sketch exists remotely, we'll keep track of this missing file
         if (existingSketch?.staticFiles) {
           existingSketch.staticFiles = existingSketch.staticFiles.filter(
             (f) =>
@@ -203,7 +198,7 @@ const processStaticFile = async (
 
     if (uploadResult?.success) {
       fileUrl = uploadResult.url;
-      if (existingSketch) {
+      if (existingSketch && existingSketch.staticFiles) {
         // Remove old entry if it exists
         existingSketch.staticFiles = existingSketch.staticFiles.filter(
           (f) => !(f.name === staticFile.name && f.folder === staticFile.folder)
@@ -234,19 +229,6 @@ const processStaticFile = async (
   }
 };
 
-// Save sketch information
-const saveSketchInfo = async (sketchesInfo, filePath) => {
-  try {
-    await fs.promises.writeFile(
-      filePath,
-      JSON.stringify(sketchesInfo, null, 2),
-      "utf8"
-    );
-  } catch (error) {
-    handleError("Error writing to file:", error);
-  }
-};
-
 // Main function
 const main = async () => {
   try {
@@ -263,17 +245,8 @@ const main = async () => {
       path.basename(sketchPath)
     );
 
-    // Load or initialize sketchesInfo
-    const sketchesInfo = fs.existsSync(config.sketchInfoFile)
-      ? JSON.parse(fs.readFileSync(config.sketchInfoFile, "utf8"))
-      : [];
-
-    // Initialize staticFiles array for existing sketches that don't have it
-    sketchesInfo.forEach((sketch) => {
-      if (!sketch.staticFiles) {
-        sketch.staticFiles = [];
-      }
-    });
+    // Create a map to track static files for each sketch during this run
+    const sketchStaticFilesMap = new Map();
 
     // Remove sketches that aren't in local folder anymore
     if (collection) {
@@ -283,11 +256,9 @@ const main = async () => {
             collection.id,
             item.project.id
           );
-          // Also remove from sketchesInfo
-          const index = sketchesInfo.findIndex((s) => s.id === item.project.id);
-          if (index !== -1) {
-            sketchesInfo.splice(index, 1);
-          }
+          console.log(
+            `Removed sketch "${item.project.name}" from collection as it no longer exists locally`
+          );
         }
       }
     }
@@ -295,9 +266,25 @@ const main = async () => {
     // Process each local sketch
     for (const sketchPath of sketches) {
       const sketchName = path.basename(sketchPath);
-      const existingSketch = sketchesInfo.find(
-        (item) => item.name === sketchName
+
+      // Find if the sketch already exists in the collection
+      const existingSketchItem = collection?.items?.find(
+        (item) => !item.isDeleted && item.project.name === sketchName
       );
+
+      // Create a structure to track static files for this sketch
+      const existingSketch = existingSketchItem
+        ? {
+            id: existingSketchItem.project.id,
+            name: sketchName,
+            staticFiles: [],
+          }
+        : null;
+
+      // Add to our tracking map
+      if (existingSketch) {
+        sketchStaticFilesMap.set(sketchName, existingSketch);
+      }
 
       const { filesData, rootId } = processCodeFiles(sketchPath);
       await processStaticFiles(
@@ -310,6 +297,7 @@ const main = async () => {
 
       if (existingSketch) {
         await apiService.updateSketch(existingSketch.id, sketchName, filesData);
+        console.log(`Updated existing sketch "${sketchName}"`);
       } else {
         const sketch = await apiService.createSketch(sketchName, filesData);
         if (sketch?.id) {
@@ -319,52 +307,45 @@ const main = async () => {
             staticFiles: [],
           };
 
-          updateSketchStaticFiles(
-            newSketchInfo,
-            sketchPath,
-            staticFiles,
-            filesData
-          );
-          sketchesInfo.push(newSketchInfo);
+          // Process static files for the new sketch
+          const sketchStaticFiles = staticFiles.get(sketchPath);
+          if (sketchStaticFiles && sketchStaticFiles.length > 0) {
+            for (const staticFile of sketchStaticFiles) {
+              const fileData = filesData.find(
+                (f) =>
+                  f.fileType === "file" &&
+                  f.name === path.basename(staticFile.name) &&
+                  f.url
+              );
+
+              if (fileData) {
+                newSketchInfo.staticFiles.push({
+                  name: staticFile.name,
+                  folder: staticFile.folder,
+                  url: fileData.url,
+                });
+              }
+            }
+          }
+
+          // Add to our tracking map
+          sketchStaticFilesMap.set(sketchName, newSketchInfo);
+
           await apiService.addSketchToCollection(
             collection.id,
             sketch.id,
             sketchName
           );
+          console.log(
+            `Created new sketch "${sketchName}" and added to collection`
+          );
         }
       }
-
-      await saveSketchInfo(sketchesInfo, config.sketchInfoFile);
     }
+
+    console.log("All sketches processed successfully");
   } catch (error) {
     handleError("An error occurred:", error);
-  }
-};
-
-const updateSketchStaticFiles = (
-  sketchInfo,
-  sketchPath,
-  staticFiles,
-  filesData
-) => {
-  const sketchStaticFiles = staticFiles.get(sketchPath);
-  if (sketchStaticFiles) {
-    for (const staticFile of sketchStaticFiles) {
-      const fileEntry = filesData.find(
-        (f) =>
-          f.fileType === "file" &&
-          f.name === path.basename(staticFile.name) &&
-          f.url
-      );
-
-      if (fileEntry) {
-        sketchInfo.staticFiles.push({
-          name: staticFile.name,
-          folder: staticFile.folder,
-          url: fileEntry.url,
-        });
-      }
-    }
   }
 };
 

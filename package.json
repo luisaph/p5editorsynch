@@ -2,9 +2,10 @@
   "name": "p5editorsynch",
   "version": "0.1.0",
   "type": "module",
-  "main": "main.js",
+  "main": "dist/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "node main.js",
+    "build": "ncc build main.js -o dist"
   },
   "author": "",
   "license": "ISC",
@@ -17,5 +18,8 @@
     "chalk": "^5.4.1",
     "dotenv": "^16.4.5",
     "tough-cookie": "^4.1.4"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.3"
   }
 }

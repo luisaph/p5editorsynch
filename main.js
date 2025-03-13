@@ -6,6 +6,7 @@ require("dotenv").config();
 
 const apiService = require("./lib/api");
 const { getSketches, processStaticFiles } = require("./lib/util");
+const log = require("./lib/log");
 
 // Constants
 const TEXT_FILE_EXTENSIONS = [".html", ".css", ".js", ".json"];
@@ -27,7 +28,9 @@ const config = {
 
 // Error handling
 const handleError = (message, error) => {
-  console.error(message, error.response ? error.response.data : error.message);
+  log.error(
+    `${message} ${error.response ? error.response.data : error.message}`
+  );
   process.exit(1);
 };
 
@@ -103,9 +106,9 @@ const main = async () => {
     );
 
     // Get all static files from the API
-    console.log("Fetching information about all static files...");
+    log.info("Fetching information about all static files...");
     const allStaticFiles = await apiService.getStaticFiles();
-    console.log(`Found ${allStaticFiles.length} static files in total.`);
+    log.info(`Found ${allStaticFiles.length} static files in total.`);
 
     // Create a map of static files by URL for quick lookup
     const staticFilesMap = new Map();
@@ -139,11 +142,11 @@ const main = async () => {
           );
 
           if (deleteResult) {
-            console.log(
+            log.delete(
               `Removed and deleted sketch "${item.project.name}" as it no longer exists locally`
             );
           } else {
-            console.log(
+            log.warning(
               `Removed sketch "${item.project.name}" from collection, but failed to delete it from the server`
             );
           }
@@ -164,7 +167,7 @@ const main = async () => {
       let existingSketch = null;
 
       if (existingSketchItem) {
-        console.log(`Fetching details for existing sketch "${sketchName}"...`);
+        log.info(`Fetching details for existing sketch "${sketchName}"...`);
         // Get full sketch details including files
         const sketchDetails = await apiService.getSketch(
           existingSketchItem.project.id
@@ -234,7 +237,7 @@ const main = async () => {
               }
             }
 
-            console.log(
+            log.info(
               `Found ${existingSketch.staticFiles.length} existing static files in sketch "${sketchName}"`
             );
           }
@@ -256,7 +259,7 @@ const main = async () => {
 
       if (existingSketch) {
         await apiService.updateSketch(existingSketch.id, sketchName, filesData);
-        console.log(`Updated existing sketch "${sketchName}"`);
+        log.success(`Updated existing sketch "${sketchName}"`);
       } else {
         const sketch = await apiService.createSketch(sketchName, filesData);
         if (sketch?.id) {
@@ -295,14 +298,14 @@ const main = async () => {
             sketch.id,
             sketchName
           );
-          console.log(
+          log.success(
             `Created new sketch "${sketchName}" and added to collection`
           );
         }
       }
     }
 
-    console.log("All sketches processed successfully");
+    log.success("All sketches processed successfully");
   } catch (error) {
     handleError("An error occurred:", error);
   }

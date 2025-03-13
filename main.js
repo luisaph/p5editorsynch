@@ -1,12 +1,13 @@
-const fs = require("fs");
-const path = require("path");
-const objectID = require("bson-objectid");
-const core = require("@actions/core");
-require("dotenv").config();
+import fs from "fs";
+import path from "path";
+import objectID from "bson-objectid";
+import * as core from "@actions/core";
+import dotenv from "dotenv";
+dotenv.config();
 
-const apiService = require("./lib/api");
-const { getSketches, processStaticFiles } = require("./lib/util");
-const log = require("./lib/log");
+import * as apiService from "./lib/api.js";
+import { getSketches, processStaticFiles } from "./lib/util.js";
+import log from "./lib/log.js";
 
 // Constants
 const TEXT_FILE_EXTENSIONS = [".html", ".css", ".js", ".json"];
@@ -307,8 +308,9 @@ const main = async () => {
 
     log.success("All sketches processed successfully");
   } catch (error) {
-    handleError("An error occurred:", error);
+    handleError("Unexpected error", error);
   }
 };
 
+// Run the main function
 main();
